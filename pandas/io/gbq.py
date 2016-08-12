@@ -529,32 +529,53 @@ def _parse_data(schema, rows):
     # see:
     # http://pandas.pydata.org/pandas-docs/dev/missing_data.html
     # #missing-data-casting-rules-and-indexing
-    dtype_map = {'INTEGER': np.dtype(float),
-                 'FLOAT': np.dtype(float),
+    dtype_map = {('INTEGER', 'REQUIRED'): np.dtype('int64'),
+                 ('INTEGER', 'NULLABLE'): np.dtype(float),  # NB!
+                 ('FLOAT', 'REQUIRED'): np.dtype(float),
+                 ('FLOAT', 'NULLABLE'): np.dtype(float),
                  # This seems to be buggy without nanosecond indicator
-                 'TIMESTAMP': 'M8[ns]'}
+                 ('TIMESTAMP', 'REQUIRED'): 'M8[ns]',
+                 ('TIMESTAMP', 'NULLABLE'): 'M8[ns]'
+                 }
 
     fields = schema['fields']
     col_types = [field['type'] for field in fields]
+    col_nullable = [field.get('mode', 'NULLABLE') == 'NULLABLE'
+                    for field in fields]
     col_names = [str(field['name']) for field in fields]
-    col_dtypes = [dtype_map.get(field['type'], object) for field in fields]
+    col_dtypes = [dtype_map.get((field['type'], field.get('mode', 'NULLABLE')),
+                                object)
+                  for field in fields]
     page_array = np.zeros((len(rows),),
                           dtype=lzip(col_names, col_dtypes))
 
     for row_num, raw_row in enumerate(rows):
         entries = raw_row.get('f', [])
-        for col_num, field_type in enumerate(col_types):
+        for col_num, field_type, field_nullable in zip(range(len(col_types)),
+                                                       col_types,
+                                                       col_nullable):
             field_value = _parse_entry(entries[col_num].get('v', ''),
-                                       field_type)
+                                       field_type,
+                                       field_nullable)
             page_array[row_num][col_num] = field_value
 
     return DataFrame(page_array, columns=col_names)
 
 
-def _parse_entry(field_value, field_type):
+def _parse_entry(field_value, field_type, field_nullable):
     if field_value is None or field_value == 'null':
         return None
-    if field_type == 'INTEGER' or field_type == 'FLOAT':
+    if field_type == 'INTEGER':
+        if field_nullable:
+            ans = float(field_value)
+            if int(ans) != int(field_value):
+                warnings.warn('Nullable INTEGER column forced to float, '
+                              'losing precision on entry %f != %d' % (
+                                  ans, int(field_value)))
+            return ans
+        else:
+            return int(field_value)
+    elif field_type == 'FLOAT':
         return float(field_value)
     elif field_type == 'TIMESTAMP':
         timestamp = datetime.utcfromtimestamp(float(field_value))
